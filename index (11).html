@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#050a0e">
+<title>Smart Door Lock</title>
+<link rel="manifest" href="manifest.json">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mqtt/5.3.4/mqtt.min.js"></script>
+<style>
+  :root {
+    --bg: #050a0e;
+    --panel: #0a1520;
+    --border: #0d2d3f;
+    --cyan: #00d4ff;
+    --green: #00ff88;
+    --red: #ff3c5a;
+    --yellow: #ffb800;
+    --text: #c8e6f0;
+    --muted: #3a6070;
+    --navy: #071525;
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'Segoe UI', Arial, sans-serif;
+    min-height: 100vh;
+    min-height: 100dvh;
+    overflow-x: hidden;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* STATUS BAR SPACER */
+  .statusbar-spacer {
+    height: env(safe-area-inset-top, 24px);
+    background: #030810;
+  }
+
+  /* HEADER */
+  .header {
+    background: #030810;
+    padding: 12px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+
+  .header-title {
+    font-size: 1rem;
+    font-weight: 700;
+    color: var(--cyan);
+    letter-spacing: 1px;
+  }
+
+  .header-sub {
+    font-size: 0.6rem;
+    color: var(--muted);
+    margin-top: 1px;
+  }
+
+  .conn-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    border-radius: 20px;
+    border: 1px solid var(--muted);
+    font-size: 0.65rem;
+    font-family: monospace;
+    cursor: pointer;
+    background: rgba(0,0,0,0.3);
+    transition: all 0.2s;
+  }
+  .conn-badge.connected { border-color: var(--green); color: var(--green); }
+  .conn-badge.connecting { border-color: var(--yellow); color: var(--yellow); }
+  .conn-badge.disconnected { border-color: var(--red); color: var(--red); }
+
+  .conn-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    background: var(--muted);
+  }
+  .connected .conn-dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .connecting .conn-dot { background: var(--yellow); animation: blink 0.8s infinite; }
+  .disconnected .conn-dot { background: var(--red); }
+
+  @keyframes blink { 50% { opacity: 0.2; } }
+
+  /* MAIN SCROLL */
+  .main { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+  /* CARD */
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .card-title {
+    font-size: 0.65rem;
+    letter-spacing: 2px;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+    font-family: monospace;
+  }
+
+  /* DOOR VISUAL */
+  .door-section {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+  }
+
+  .door-wrap {
+    width: 90px;
+    height: 120px;
+    flex-shrink: 0;
+    position: relative;
+  }
+
+  .door-frame {
+    width: 100%;
+    height: 100%;
+    border: 2px solid var(--muted);
+    border-radius: 4px 4px 0 0;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .door-leaf {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, #0d2030 0%, #071520 100%);
+    border-right: 1px solid var(--border);
+    transform-origin: left center;
+    transition: transform 1.2s cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  }
+
+  .door-leaf.open { transform: perspective(300px) rotateY(-70deg); }
+
+  .door-knob {
+    position: absolute;
+    right: 12px;
+    top: 50%;
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--yellow);
+    margin-top: -4px;
+    transition: background 0.3s;
+  }
+  .door-leaf.open .door-knob { background: var(--green); }
+
+  .door-info { flex: 1; }
+
+  .status-badge {
+    display: inline-block;
+    padding: 8px 18px;
+    border-radius: 30px;
+    font-size: 1rem;
+    font-weight: 700;
+    border: 1px solid;
+    transition: all 0.4s;
+    letter-spacing: 1px;
+    margin-bottom: 14px;
+  }
+  .status-badge.locked { border-color: var(--red); color: var(--red); background: rgba(255,60,90,0.1); }
+  .status-badge.unlocked { border-color: var(--green); color: var(--green); background: rgba(0,255,136,0.1); }
+
+  /* SERVO GAUGE */
+  .gauge-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.7rem;
+    margin-bottom: 5px;
+    font-family: monospace;
+  }
+
+  .gauge-track {
+    height: 10px;
+    background: var(--border);
+    border-radius: 5px;
+    overflow: hidden;
+  }
+
+  .gauge-fill {
+    height: 100%;
+    border-radius: 5px;
+    background: linear-gradient(90deg, var(--cyan), var(--green));
+    transition: width 1.2s ease;
+    width: 0%;
+    box-shadow: 0 0 8px rgba(0,212,255,0.5);
+  }
+
+  .gauge-ends {
+    display: flex;
+    justify-content: space-between;
+    font-size: 0.6rem;
+    color: var(--muted);
+    font-family: monospace;
+    margin-top: 3px;
+  }
+
+  /* STATS GRID */
+  .stats-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .stat-item {
+    background: var(--navy);
+    border-radius: 10px;
+    padding: 12px;
+    border: 1px solid var(--border);
+  }
+
+  .stat-label {
+    font-size: 0.6rem;
+    color: var(--muted);
+    font-family: monospace;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .stat-value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .stat-value.c { color: var(--cyan); }
+  .stat-value.g { color: var(--green); }
+  .stat-value.r { color: var(--red); }
+  .stat-value.y { color: var(--yellow); font-size: 1.2rem; margin-top: 4px; }
+
+  /* CONTROL BUTTONS */
+  .btn-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .ctrl-btn {
+    padding: 18px 10px;
+    border-radius: 12px;
+    border: 1px solid;
+    font-size: 1rem;
+    font-weight: 700;
+    letter-spacing: 1px;
+    cursor: pointer;
+    background: transparent;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .ctrl-btn:active { transform: scale(0.94); opacity: 0.8; }
+
+  .ctrl-btn.open {
+    border-color: var(--green);
+    color: var(--green);
+    background: rgba(0,255,136,0.07);
+  }
+
+  .ctrl-btn.lock {
+    border-color: var(--red);
+    color: var(--red);
+    background: rgba(255,60,90,0.07);
+  }
+
+  .ctrl-btn .icon { font-size: 1.6rem; }
+  .ctrl-btn .topic { font-size: 0.55rem; color: var(--muted); font-family: monospace; font-weight: 400; }
+
+  /* LOG */
+  .log-list {
+    max-height: 220px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .log-list::-webkit-scrollbar { width: 3px; }
+  .log-list::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 2px; }
+
+  .log-entry {
+    padding: 8px 10px;
+    border-radius: 8px;
+    border-left: 3px solid;
+    font-size: 0.78rem;
+    background: rgba(255,255,255,0.02);
+    animation: fadeIn 0.25s ease;
+  }
+
+  @keyframes fadeIn { from { opacity:0; transform:translateX(-6px); } to { opacity:1; transform:none; } }
+
+  .log-entry.success { border-color: var(--green); }
+  .log-entry.danger  { border-color: var(--red); }
+  .log-entry.info    { border-color: var(--cyan); }
+  .log-entry.warn    { border-color: var(--yellow); }
+
+  .log-time {
+    font-family: monospace;
+    font-size: 0.6rem;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  /* MQTT CONFIG */
+  .mqtt-row {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+  }
+
+  .field { flex: 1; display: flex; flex-direction: column; gap: 4px; }
+
+  .field label {
+    font-size: 0.6rem;
+    color: var(--muted);
+    font-family: monospace;
+    letter-spacing: 1px;
+  }
+
+  .field input {
+    background: rgba(0,0,0,0.4);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    color: var(--text);
+    font-family: monospace;
+    font-size: 0.85rem;
+    outline: none;
+    width: 100%;
+  }
+  .field input:focus { border-color: var(--cyan); }
+
+  .connect-btn {
+    padding: 10px 16px;
+    border-radius: 8px;
+    border: 1px solid var(--cyan);
+    background: rgba(0,212,255,0.1);
+    color: var(--cyan);
+    font-family: monospace;
+    font-size: 0.7rem;
+    letter-spacing: 1px;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all 0.2s;
+  }
+  .connect-btn:active { background: rgba(0,212,255,0.25); transform: scale(0.96); }
+
+  /* ALERT TOAST */
+  .toast {
+    position: fixed;
+    top: 80px;
+    left: 50%;
+    transform: translateX(-50%) translateY(-20px);
+    z-index: 999;
+    padding: 12px 24px;
+    border-radius: 30px;
+    font-family: monospace;
+    font-size: 0.85rem;
+    font-weight: 700;
+    border: 1px solid;
+    opacity: 0;
+    transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.success { border-color: var(--green); color: var(--green); background: rgba(0,255,136,0.15); }
+  .toast.danger  { border-color: var(--red); color: var(--red); background: rgba(255,60,90,0.15); }
+  .toast.info    { border-color: var(--cyan); color: var(--cyan); background: rgba(0,212,255,0.15); }
+
+  /* LAST MSG */
+  .last-msg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .last-msg-item { background: var(--navy); border-radius: 8px; padding: 10px; }
+  .last-msg-topic { font-size: 0.55rem; color: var(--muted); font-family: monospace; margin-bottom: 4px; }
+  .last-msg-val { font-size: 0.8rem; font-weight: 700; font-family: monospace; word-break: break-all; }
+
+  /* CLOCK */
+  .clock { font-family: monospace; font-size: 0.62rem; color: var(--muted); }
+
+  /* FOOTER */
+  .footer {
+    text-align: center;
+    padding: 16px;
+    font-size: 0.6rem;
+    color: var(--muted);
+    font-family: monospace;
+    border-top: 1px solid var(--border);
+    margin-top: 4px;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--muted); border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<div class="statusbar-spacer"></div>
+
+<div class="toast" id="toast"></div>
+
+<!-- HEADER -->
+<div class="header">
+  <div>
+    <div class="header-title">🔐 SMART DOOR LOCK</div>
+    <div class="header-sub">IoT Dashboard · ITSNU Pekalongan · <span id="clock">--:--:--</span></div>
+  </div>
+  <div class="conn-badge disconnected" id="connBadge" onclick="toggleConnect()">
+    <div class="conn-dot"></div>
+    <span id="connLabel">CONNECT</span>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- MQTT CONFIG -->
+  <div class="card">
+    <div class="card-title">⚙ Konfigurasi MQTT</div>
+    <div class="mqtt-row">
+      <div class="field">
+        <label>BROKER</label>
+        <input type="text" id="mqttHost" value="broker.emqx.io">
+      </div>
+      <div class="field" style="max-width:90px">
+        <label>PORT</label>
+        <input type="number" id="mqttPort" value="8084">
+      </div>
+      <button class="connect-btn" id="connectBtn" onclick="toggleConnect()">CONNECT</button>
+    </div>
+  </div>
+
+  <!-- DOOR STATUS -->
+  <div class="card">
+    <div class="card-title">◈ Status Pintu</div>
+    <div class="door-section">
+      <div class="door-wrap">
+        <div class="door-frame">
+          <div class="door-leaf" id="doorLeaf">
+            <div class="door-knob"></div>
+          </div>
+        </div>
+      </div>
+      <div class="door-info">
+        <div class="status-badge locked" id="statusBadge">🔒 TERKUNCI</div>
+        <div class="gauge-label">
+          <span style="font-size:0.65rem;color:var(--muted)">SERVO</span>
+          <span style="color:var(--cyan);font-family:monospace;font-weight:700" id="servoAngle">0°</span>
+        </div>
+        <div class="gauge-track">
+          <div class="gauge-fill" id="gaugeFill"></div>
+        </div>
+        <div class="gauge-ends"><span>0° KUNCI</span><span>90° BUKA</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STATS -->
+  <div class="card">
+    <div class="card-title">◈ Statistik Sesi</div>
+    <div class="stats-grid">
+      <div class="stat-item">
+        <div class="stat-label">Akses Sukses</div>
+        <div class="stat-value g" id="stSuccess">0</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Gagal / Salah PIN</div>
+        <div class="stat-value r" id="stFail">0</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Perintah Remote</div>
+        <div class="stat-value c" id="stRemote">0</div>
+      </div>
+      <div class="stat-item">
+        <div class="stat-label">Posisi Servo</div>
+        <div class="stat-value y" id="stServo">0°</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REMOTE CONTROL -->
+  <div class="card">
+    <div class="card-title">◈ Remote Control</div>
+    <div class="btn-grid">
+      <button class="ctrl-btn open" onclick="publishCmd('BUKA')">
+        <span class="icon">🔓</span>
+        <span>BUKA</span>
+        <span class="topic">pintu/kontrol</span>
+      </button>
+      <button class="ctrl-btn lock" onclick="publishCmd('KUNCI')">
+        <span class="icon">🔒</span>
+        <span>KUNCI</span>
+        <span class="topic">pintu/kontrol</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- LAST MESSAGE -->
+  <div class="card">
+    <div class="card-title">◈ Pesan Terakhir</div>
+    <div class="last-msg-grid">
+      <div class="last-msg-item">
+        <div class="last-msg-topic">pintu/status</div>
+        <div class="last-msg-val" id="lastStatus" style="color:var(--cyan)">—</div>
+      </div>
+      <div class="last-msg-item">
+        <div class="last-msg-topic">pintu/uas</div>
+        <div class="last-msg-val" id="lastUas" style="color:var(--green)">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOG -->
+  <div class="card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <div class="card-title" style="margin:0">◈ Log Aktivitas</div>
+      <button onclick="clearLog()" style="background:transparent;border:1px solid var(--muted);color:var(--muted);font-family:monospace;font-size:0.6rem;padding:4px 10px;border-radius:6px;cursor:pointer">CLEAR</button>
+    </div>
+    <div class="log-list" id="logList">
+      <div class="log-entry info">
+        <span class="log-time">--:--:--</span>
+        Aplikasi siap. Tap CONNECT untuk terhubung ke MQTT.
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Smart Door Lock IoT · ESP32 + MQTT · ITSNU Pekalongan 2025/2026<br>
+    NiaSyahfa'a · 101230014 · TF23C
+  </div>
+
+</div><!-- /main -->
+
+<script>
+// ── CLOCK ──────────────────────────────────────────────
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString('id-ID');
+}, 1000);
+
+// ── STATE ──────────────────────────────────────────────
+let client = null, connected = false;
+let stats = { success:0, fail:0, remote:0 };
+
+// ── DOOR ───────────────────────────────────────────────
+function setDoor(open) {
+  const leaf = document.getElementById('doorLeaf');
+  const badge = document.getElementById('statusBadge');
+  const fill = document.getElementById('gaugeFill');
+  const angle = document.getElementById('servoAngle');
+  const stServo = document.getElementById('stServo');
+
+  if (open) {
+    leaf.classList.add('open');
+    badge.className = 'status-badge unlocked';
+    badge.textContent = '🔓 TERBUKA';
+    fill.style.width = '100%';
+    angle.textContent = '90°';
+    stServo.textContent = '90°';
+  } else {
+    leaf.classList.remove('open');
+    badge.className = 'status-badge locked';
+    badge.textContent = '🔒 TERKUNCI';
+    fill.style.width = '0%';
+    angle.textContent = '0°';
+    stServo.textContent = '0°';
+  }
+}
+
+// ── TOAST ──────────────────────────────────────────────
+function showToast(msg, type='info') {
+  const t = document.getElementById('toast');
+  t.className = 'toast ' + type;
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ── LOG ────────────────────────────────────────────────
+function addLog(topic, msg) {
+  const list = document.getElementById('logList');
+  const now = new Date().toLocaleTimeString('id-ID');
+  const up = msg.toUpperCase();
+  let type = 'info';
+  if (up.includes('TERBUKA') || up.includes('AKSES DITERIMA')) type = 'success';
+  else if (up.includes('GAGAL') || up.includes('SALAH')) type = 'danger';
+  else if (up.includes('TERKUNCI')) type = 'warn';
+
+  const el = document.createElement('div');
+  el.className = 'log-entry ' + type;
+  el.innerHTML = `<span class="log-time">${now} · ${topic}</span>${msg}`;
+  list.insertBefore(el, list.firstChild);
+  while (list.children.length > 40) list.removeChild(list.lastChild);
+}
+
+function clearLog() {
+  document.getElementById('logList').innerHTML = '';
+}
+
+// ── PROCESS MQTT MSG ───────────────────────────────────
+function processMsg(topic, msg) {
+  msg = msg.toString().trim();
+  addLog(topic, msg);
+  const up = msg.toUpperCase();
+
+  if (topic === 'pintu/status') {
+    document.getElementById('lastStatus').textContent = msg;
+    if (up.includes('TERBUKA')) { setDoor(true); showToast('🔓 PINTU TERBUKA', 'success'); }
+    else if (up.includes('TERKUNCI')) { setDoor(false); showToast('🔒 PINTU TERKUNCI', 'danger'); }
+  }
+
+  if (topic === 'pintu/uas') {
+    document.getElementById('lastUas').textContent = msg;
+    if (up.includes('AKSES DITERIMA')) {
+      stats.success++;
+      document.getElementById('stSuccess').textContent = stats.success;
+      showToast('✅ AKSES DITERIMA', 'success');
+    } else if (up.includes('PERCOBAAN GAGAL') || up.includes('PIN SALAH')) {
+      stats.fail++;
+      document.getElementById('stFail').textContent = stats.fail;
+      showToast('❌ PIN SALAH!', 'danger');
+    }
+  }
+}
+
+// ── MQTT ───────────────────────────────────────────────
+function setConnUI(state) {
+  const badge = document.getElementById('connBadge');
+  const label = document.getElementById('connLabel');
+  const btn   = document.getElementById('connectBtn');
+  badge.className = 'conn-badge ' + state;
+  if (state === 'connected') { label.textContent = 'CONNECTED'; btn.textContent = 'DISCONNECT'; }
+  else if (state === 'connecting') { label.textContent = 'CONNECTING'; btn.textContent = 'CANCEL'; }
+  else { label.textContent = 'CONNECT'; btn.textContent = 'CONNECT'; }
+}
+
+function toggleConnect() {
+  if (connected) disconnect();
+  else connect();
+}
+
+function connect() {
+  const host = document.getElementById('mqttHost').value.trim();
+  const port = document.getElementById('mqttPort').value.trim();
+  const url = `wss://${host}:${port}/mqtt`;
+
+  setConnUI('connecting');
+  addLog('SYSTEM', 'Menghubungkan ke ' + url + '...');
+
+  try {
+    client = mqtt.connect(url, {
+      clientId: 'android_smartdoor_' + Math.random().toString(16).slice(2,8),
+      clean: true,
+      connectTimeout: 10000,
+      reconnectPeriod: 0
+    });
+
+    client.on('connect', () => {
+      connected = true;
+      setConnUI('connected');
+      addLog('SYSTEM', 'Terhubung ke ' + host);
+      showToast('✅ MQTT TERHUBUNG', 'success');
+      client.subscribe('pintu/status');
+      client.subscribe('pintu/uas');
+    });
+
+    client.on('message', (topic, payload) => processMsg(topic, payload.toString()));
+
+    client.on('error', (err) => {
+      addLog('ERROR', 'Gagal: ' + err.message);
+      setConnUI('disconnected');
+      connected = false;
+      showToast('❌ KONEKSI GAGAL', 'danger');
+    });
+
+    client.on('close', () => {
+      if (connected) {
+        connected = false;
+        setConnUI('disconnected');
+        addLog('SYSTEM', 'Koneksi terputus.');
+      }
+    });
+  } catch(e) {
+    addLog('ERROR', e.message);
+    setConnUI('disconnected');
+  }
+}
+
+function disconnect() {
+  if (client) { client.end(true); client = null; }
+  connected = false;
+  setConnUI('disconnected');
+  addLog('SYSTEM', 'Disconnect.');
+}
+
+// ── PUBLISH ────────────────────────────────────────────
+function publishCmd(cmd) {
+  if (!connected || !client) {
+    showToast('⚠ Belum terhubung!', 'danger');
+    return;
+  }
+  client.publish('pintu/kontrol', cmd, { qos:1 }, (err) => {
+    if (err) { addLog('ERROR', 'Gagal publish: ' + err.message); return; }
+    addLog('pintu/kontrol', 'Perintah: ' + cmd);
+    stats.remote++;
+    document.getElementById('stRemote').textContent = stats.remote;
+    showToast(cmd === 'BUKA' ? '📤 PERINTAH BUKA DIKIRIM' : '📤 PERINTAH KUNCI DIKIRIM',
+              cmd === 'BUKA' ? 'success' : 'danger');
+  });
+}
+</script>
+</body>
+</html>
